@@ -229,6 +229,11 @@ hr.sep{border:none;border-top:1px solid var(--line-soft);margin:13px 0}
       <div class="sect">
         <h3>입력</h3>
         <label class="chk" title="손가락으로도 그리기"><input type="checkbox" id="cFinger"><span>손그리기</span></label>
+        <div class="slab" title="펜 좌우 보정">보정 X <i id="poxv">0</i></div>
+        <input type="range" id="pox" min="-24" max="24" step="1" value="0">
+        <div class="slab" title="펜 상하 보정">보정 Y <i id="poyv">0</i></div>
+        <input type="range" id="poy" min="-24" max="24" step="1" value="0">
+        <button class="toolbtn" id="btnPenReset" title="보정 초기화" style="justify-content:center"><span>보정 초기화</span></button>
       </div>
       <div class="sect">
         <h3>편집</h3>
@@ -307,6 +312,7 @@ const S={
   scale:1, cam:{x:WX/2,y:WY/2},
   tool:"brush", terrain:1, brush:4, density:35,
   selField:null, selPin:null, iso:null, fingerDraw:false,
+  penOff:{x:0,y:0},
   show:{grid:true,label:true,pins:false,block:false,iso:true},
 };
 
@@ -620,14 +626,23 @@ let drawId=null,lastCell=null,rectDrag=null,pinDrag=null;
 let panId=null,panPrev=null,pinch=null;
 let hoverX=0,hoverY=0,hoverOn=false;
 
-function cellOf(e){const[cx,cy]=s2c(e.offsetX,e.offsetY);return[Math.floor(cx),Math.floor(cy)];}
+/* 캔버스 기준 좌표. offsetX/Y는 사파리에서 부정확할 수 있어 rect로 직접 계산하고,
+   펜·손가락에는 시차 보정값을 더한다. */
+function pos(e){
+  const r=cv.getBoundingClientRect();
+  let x=e.clientX-r.left, y=e.clientY-r.top;
+  if(e.pointerType!=="mouse"){x+=S.penOff.x;y+=S.penOff.y;}
+  return[x,y];
+}
+function cellOf(e){const[px,py]=pos(e);const[cx,cy]=s2c(px,py);return[Math.floor(cx),Math.floor(cy)];}
 const touchList=()=>[...ptrs.values()].filter(p=>p.type==="touch");
 
 cv.addEventListener("pointerdown",e=>{
   e.preventDefault();
   try{cv.setPointerCapture(e.pointerId);}catch(_){}
-  ptrs.set(e.pointerId,{x:e.offsetX,y:e.offsetY,type:e.pointerType});
-  hoverX=e.offsetX;hoverY=e.offsetY;hoverOn=true;
+  const[px,py]=pos(e);
+  ptrs.set(e.pointerId,{x:px,y:py,type:e.pointerType});
+  hoverX=px;hoverY=py;hoverOn=true;
 
   const t=touchList();
   if(t.length>=2){
@@ -638,7 +653,7 @@ cv.addEventListener("pointerdown",e=>{
   }
   const forcePan=e.pointerType==="mouse"&&(e.button===1||e.button===2||e.shiftKey);
   if(forcePan||S.tool==="pan"||(e.pointerType==="touch"&&!S.fingerDraw)){
-    panId=e.pointerId;panPrev={x:e.offsetX,y:e.offsetY};
+    panId=e.pointerId;panPrev={x:px,y:py};
     cv.style.cursor="grabbing";return;
   }
   if(e.pointerType==="mouse"&&e.button!==0)return;
@@ -647,8 +662,9 @@ cv.addEventListener("pointerdown",e=>{
 
 function startDraw(e){
   const[icx,icy]=cellOf(e);
+  const[px,py]=pos(e);
   if(pinMode()||S.show.pins){
-    const hit=hitPin(e.offsetX,e.offsetY);
+    const hit=hitPin(px,py);
     if(hit&&S.tool!=="pin"){selectPin(hit.id);return;}
     if(S.tool==="pin"){
       if(hit){selectPin(hit.id);pinDrag=hit;drawId=e.pointerId;return;}
@@ -674,9 +690,10 @@ function abortDraw(){
 }
 
 cv.addEventListener("pointermove",e=>{
+  const[px,py]=pos(e);
   const rec=ptrs.get(e.pointerId);
-  if(rec){rec.x=e.offsetX;rec.y=e.offsetY;}
-  hoverX=e.offsetX;hoverY=e.offsetY;hoverOn=true;dirty=true;
+  if(rec){rec.x=px;rec.y=py;}
+  hoverX=px;hoverY=py;hoverOn=true;dirty=true;
 
   if(pinch){
     const t=touchList();
@@ -694,8 +711,8 @@ cv.addEventListener("pointermove",e=>{
   }
   if(panId===e.pointerId&&panPrev){
     const z=zs();
-    S.cam.x-=(e.offsetX-panPrev.x)/z;S.cam.y-=(e.offsetY-panPrev.y)/z;
-    panPrev={x:e.offsetX,y:e.offsetY};clampCam();return;
+    S.cam.x-=(px-panPrev.x)/z;S.cam.y-=(py-panPrev.y)/z;
+    panPrev={x:px,y:py};clampCam();return;
   }
   if(drawId!==e.pointerId)return;
   const[icx,icy]=cellOf(e);
@@ -725,7 +742,8 @@ cv.addEventListener("pointerleave",e=>{if(e.pointerType!=="touch"){hoverOn=false
 cv.addEventListener("contextmenu",e=>e.preventDefault());
 cv.addEventListener("wheel",e=>{
   e.preventDefault();
-  setScale(S.scale*Math.pow(2,-e.deltaY/300),e.offsetX,e.offsetY);
+  const r=cv.getBoundingClientRect();
+  setScale(S.scale*Math.pow(2,-e.deltaY/300),e.clientX-r.left,e.clientY-r.top);
 },{passive:false});
 ["gesturestart","gesturechange","gestureend"].forEach(g=>
   document.addEventListener(g,e=>e.preventDefault(),{passive:false}));
@@ -974,6 +992,21 @@ document.getElementById("cFinger").onchange=e=>{
                     :"손가락은 이동, 펜슬로 그립니다.");
 };
 
+/* 펜 시차 보정 — 기기마다 다르므로 지도 데이터와 분리해 저장한다 */
+const PEN_KEY="darronoa-pen-offset";
+const poxEl=document.getElementById("pox"),poyEl=document.getElementById("poy");
+function syncPen(save){
+  poxEl.value=S.penOff.x;poyEl.value=S.penOff.y;
+  document.getElementById("poxv").textContent=(S.penOff.x>0?"+":"")+S.penOff.x;
+  document.getElementById("poyv").textContent=(S.penOff.y>0?"+":"")+S.penOff.y;
+  if(save){try{localStorage.setItem(PEN_KEY,JSON.stringify(S.penOff));}catch(_){}}
+  dirty=true;
+}
+poxEl.oninput=()=>{S.penOff.x=+poxEl.value;syncPen(true);};
+poyEl.oninput=()=>{S.penOff.y=+poyEl.value;syncPen(true);};
+document.getElementById("btnPenReset").onclick=()=>{S.penOff={x:0,y:0};syncPen(true);toast("펜 보정을 0으로 되돌렸습니다");};
+try{const s=JSON.parse(localStorage.getItem(PEN_KEY));if(s&&typeof s.x==="number")S.penOff=s;}catch(_){}
+
 const bsEl=document.getElementById("bs"),denEl=document.getElementById("den");
 function syncBrush(){
   bsEl.value=S.brush;const n=BRUSH_SIZES[S.brush];
@@ -1123,7 +1156,7 @@ function toast(m){
   clearTimeout(toastT);toastT=setTimeout(()=>el.classList.remove("show"),2600);
 }
 
-renderTools();renderZoom();renderPalette();syncBrush();
+renderTools();renderZoom();renderPalette();syncBrush();syncPen(false);
 resize();restore();renderInspector();clampCam();
 requestAnimationFrame(loop);
 if(window.matchMedia("(pointer:coarse)").matches)
